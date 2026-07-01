@@ -28,7 +28,7 @@ jobs:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          CHANGE_THRESHOLD: "10"
+          CHANGE_THRESHOLD: "1"
         run: |
           python3 << 'PYEOF'
           import re, os, json
@@ -36,22 +36,41 @@ jobs:
           import urllib.request
           from playwright.sync_api import sync_playwright
 
-          # Fetch page with a real browser
           print("Launching browser...")
           with sync_playwright() as p:
               browser = p.chromium.launch()
               page = browser.new_page()
-              page.goto("https://theprivacycollective.nl/applovin-home/", wait_until="networkidle", timeout=60000)
+              page.goto("https://theprivacycollective.nl/applovin-home/", timeout=60000)
+
+              # Wait for the counter text to appear on the page
+              try:
+                  page.wait_for_selector("text=STEUNBETUIGINGEN", timeout=30000)
+                  print("Counter element found!")
+              except:
+                  print("Timeout waiting for STEUNBETUIGINGEN text, trying to read page anyway...")
+
+              # Give it a bit more time for the number to populate
+              page.wait_for_timeout(3000)
+
               html = page.content()
               browser.close()
 
           print(f"Page loaded, {len(html)} chars")
 
-          # Find the counter
+          # Try multiple patterns to find the counter
           match = re.search(r"([\d.]+)\s*STEUNBETUIGINGEN", html, re.IGNORECASE)
           if not match:
+              # Try looking for just a number near "steun"
+              match = re.search(r"(\d[\d.]*)\s*</?\w[^>]*>\s*(?:<[^>]*>\s*)*STEUNBETUIGINGEN", html, re.IGNORECASE)
+          if not match:
+              # Try finding it in any element
+              match = re.search(r">([\d.]{3,})<.*?STEUNBETUIGINGEN", html, re.IGNORECASE | re.DOTALL)
+          if not match:
               print("ERROR: Could not find counter")
-              print("Page snippet:", html[:3000])
+              # Print parts of the page that contain 'steun'
+              for i, line in enumerate(html.split('\n')):
+                  if 'steun' in line.lower() or 'STEUN' in line:
+                      print(f"Line {i}: {line.strip()[:200]}")
               exit(1)
 
           raw = match.group(1)
@@ -65,7 +84,7 @@ jobs:
                   data = json.load(f)
 
           previous = data.get("count")
-          threshold = int(os.environ.get("CHANGE_THRESHOLD", "10"))
+          threshold = int(os.environ.get("CHANGE_THRESHOLD", "1"))
           now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
           print(f"[{now}] Current: {current:,} | Previous: {previous}")
@@ -113,4 +132,3 @@ jobs:
           git add data.json
           git diff --cached --quiet || git commit -m "Update count $(date -u +'%Y-%m-%d %H:%M UTC')"
           git push
-
