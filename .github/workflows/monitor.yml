@@ -15,7 +15,7 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
 
@@ -28,11 +28,14 @@ jobs:
           pip install playwright
           playwright install chromium --with-deps
 
-      - name: Check supporter count
+      - name: Monitor loop
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: |
-          python3 << 'PYEOF'
+          for i in $(seq 1 70); do
+            echo "=== Check #$i at $(date -u) ==="
+
+            python3 << 'PYEOF'
           import re, os, json, subprocess
           from datetime import datetime, timezone
           from playwright.sync_api import sync_playwright
@@ -113,11 +116,19 @@ jobs:
               print("Data saved.")
           PYEOF
 
-      - name: Commit data
-        run: |
-          git config user.name "TPC Monitor Bot"
-          git config user.email "bot@users.noreply.github.com"
-          git add data.json
-          git diff --cached --quiet || git commit -m "Update count $(date -u +'%Y-%m-%d %H:%M UTC')"
-          git push || true
+            # Commit after each check
+            git config user.name "TPC Monitor Bot"
+            git config user.email "bot@users.noreply.github.com"
+            git pull --rebase || git rebase --abort 2>/dev/null || true
+            git add data.json
+            git diff --cached --quiet || git commit -m "Update count $(date -u +'%Y-%m-%d %H:%M UTC')"
+            git push || true
+
+            # Wait 5 minutes before next check (skip wait on last iteration)
+            if [ $i -lt 70 ]; then
+              echo "Sleeping 5 minutes..."
+              sleep 300
+            fi
+          done
+          echo "Loop complete."
 
