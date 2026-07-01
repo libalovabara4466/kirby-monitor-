@@ -14,6 +14,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Playwright
+        run: |
+          pip install playwright
+          playwright install chromium --with-deps
+
       - name: Fetch page and check count
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
@@ -21,35 +30,28 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           CHANGE_THRESHOLD: "10"
         run: |
-          # Fetch the page with curl
-          curl -s -L \
-            -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36" \
-            -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" \
-            -H "Accept-Language: nl-NL,nl;q=0.9,en;q=0.8" \
-            --compressed \
-            "https://theprivacycollective.nl/applovin-home/" -o page.html
-
-          echo "Page size: $(wc -c < page.html) bytes"
-          echo "Looking for counter..."
-          grep -oP '[\d.]+\s*STEUNBETUIGINGEN' page.html || echo "Pattern not found, showing page start:"
-          head -c 3000 page.html
-
-          # Parse and compare with Python
           python3 << 'PYEOF'
           import re, os, json
           from datetime import datetime, timezone
           import urllib.request
+          from playwright.sync_api import sync_playwright
 
-          with open("page.html") as f:
-              html = f.read()
+          # Fetch page with a real browser
+          print("Launching browser...")
+          with sync_playwright() as p:
+              browser = p.chromium.launch()
+              page = browser.new_page()
+              page.goto("https://theprivacycollective.nl/applovin-home/", wait_until="networkidle", timeout=60000)
+              html = page.content()
+              browser.close()
+
+          print(f"Page loaded, {len(html)} chars")
 
           # Find the counter
           match = re.search(r"([\d.]+)\s*STEUNBETUIGINGEN", html, re.IGNORECASE)
           if not match:
-              match = re.search(r"([\d.]+)\s*steunbetuigingen", html)
-          if not match:
-              print("ERROR: Could not find counter in page")
-              print("First 2000 chars:", html[:2000])
+              print("ERROR: Could not find counter")
+              print("Page snippet:", html[:3000])
               exit(1)
 
           raw = match.group(1)
