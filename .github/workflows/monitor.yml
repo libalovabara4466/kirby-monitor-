@@ -2,7 +2,7 @@ name: Monitor TPC Supporter Count
 
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "*/10 * * * *"
   workflow_dispatch:
 
 permissions:
