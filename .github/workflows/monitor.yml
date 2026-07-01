@@ -25,6 +25,7 @@ jobs:
 
       - name: Fetch page and check count
         env:
+          TEAMS_WEBHOOK: ${{ secrets.TEAMS_WEBHOOK }}
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -42,34 +43,24 @@ jobs:
               page = browser.new_page()
               page.goto("https://theprivacycollective.nl/applovin-home/", timeout=60000)
 
-              # Wait for the counter text to appear on the page
               try:
                   page.wait_for_selector("text=STEUNBETUIGINGEN", timeout=30000)
                   print("Counter element found!")
               except:
-                  print("Timeout waiting for STEUNBETUIGINGEN text, trying to read page anyway...")
+                  print("Timeout waiting for counter, trying anyway...")
 
-              # Give it a bit more time for the number to populate
               page.wait_for_timeout(3000)
-
               html = page.content()
               browser.close()
 
           print(f"Page loaded, {len(html)} chars")
 
-          # Try multiple patterns to find the counter
           match = re.search(r"([\d.]+)\s*STEUNBETUIGINGEN", html, re.IGNORECASE)
           if not match:
-              # Try looking for just a number near "steun"
-              match = re.search(r"(\d[\d.]*)\s*</?\w[^>]*>\s*(?:<[^>]*>\s*)*STEUNBETUIGINGEN", html, re.IGNORECASE)
-          if not match:
-              # Try finding it in any element
               match = re.search(r">([\d.]{3,})<.*?STEUNBETUIGINGEN", html, re.IGNORECASE | re.DOTALL)
           if not match:
-              print("ERROR: Could not find counter")
-              # Print parts of the page that contain 'steun'
               for i, line in enumerate(html.split('\n')):
-                  if 'steun' in line.lower() or 'STEUN' in line:
+                  if 'steun' in line.lower():
                       print(f"Line {i}: {line.strip()[:200]}")
               exit(1)
 
@@ -77,7 +68,6 @@ jobs:
           current = int(raw.replace(".", ""))
           print(f"Found count: {current:,}")
 
-          # Load previous data
           data = {"count": None, "history": []}
           if os.path.exists("data.json"):
               with open("data.json") as f:
@@ -86,35 +76,67 @@ jobs:
           previous = data.get("count")
           threshold = int(os.environ.get("CHANGE_THRESHOLD", "1"))
           now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-
           print(f"[{now}] Current: {current:,} | Previous: {previous}")
 
           data.setdefault("history", [])
           data["history"].append({"time": now, "count": current})
           data["history"] = data["history"][-500:]
 
+          def send_teams(message):
+              url = os.environ.get("TEAMS_WEBHOOK")
+              if not url:
+                  print("No TEAMS_WEBHOOK set, skipping")
+                  return
+              payload = json.dumps({
+                  "type": "message",
+                  "attachments": [{
+                      "contentType": "application/vnd.microsoft.card.adaptive",
+                      "content": {
+                          "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                          "type": "AdaptiveCard",
+                          "version": "1.4",
+                          "body": [{
+                              "type": "TextBlock",
+                              "text": message,
+                              "wrap": True,
+                              "size": "Medium"
+                          }]
+                      }
+                  }]
+              }).encode("utf-8")
+              req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+              urllib.request.urlopen(req, timeout=15)
+              print("Teams notification sent!")
+
+          def send_discord(message):
+              url = os.environ.get("DISCORD_WEBHOOK")
+              if not url:
+                  return
+              payload = json.dumps({"content": message}).encode("utf-8")
+              req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+              urllib.request.urlopen(req, timeout=15)
+              print("Discord sent")
+
+          def send_telegram(message):
+              token = os.environ.get("TELEGRAM_TOKEN")
+              chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+              if not token or not chat_id:
+                  return
+              url = f"https://api.telegram.org/bot{token}/sendMessage"
+              payload = json.dumps({"chat_id": chat_id, "text": message}).encode("utf-8")
+              req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+              urllib.request.urlopen(req, timeout=15)
+              print("Telegram sent")
+
           if previous is not None:
               diff = current - previous
               if abs(diff) >= threshold:
                   direction = "📈 UP" if diff > 0 else "📉 DOWN"
-                  msg = f"{direction} by {abs(diff):,}!\nTPC AppLovin steunbetuigingen: {previous:,} → {current:,}\nTime: {now}\nhttps://theprivacycollective.nl/applovin-home/"
+                  msg = f"{direction} by {abs(diff):,}!  \\nTPC AppLovin steunbetuigingen: {previous:,} → {current:,}  \\nTime: {now}  \\nhttps://theprivacycollective.nl/applovin-home/"
                   print(msg)
-
-                  webhook = os.environ.get("DISCORD_WEBHOOK")
-                  if webhook:
-                      payload = json.dumps({"content": msg}).encode("utf-8")
-                      req = urllib.request.Request(webhook, data=payload, headers={"Content-Type": "application/json"}, method="POST")
-                      urllib.request.urlopen(req, timeout=15)
-                      print("Discord sent")
-
-                  token = os.environ.get("TELEGRAM_TOKEN")
-                  chat_id = os.environ.get("TELEGRAM_CHAT_ID")
-                  if token and chat_id:
-                      url = f"https://api.telegram.org/bot{token}/sendMessage"
-                      payload = json.dumps({"chat_id": chat_id, "text": msg}).encode("utf-8")
-                      req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
-                      urllib.request.urlopen(req, timeout=15)
-                      print("Telegram sent")
+                  send_teams(msg)
+                  send_discord(msg)
+                  send_telegram(msg)
               else:
                   print(f"Change of {diff:,} below threshold ({threshold})")
           else:
